@@ -1,0 +1,31 @@
+{
+  "mcpServers": {
+      "filesystem": {
+        "command": "docker",
+        "args": [
+          "run",
+          "-i",
+          "--rm",
+          "--mount", "type=bind,src=/Users/kennethliao/projects/tutorials/human-in-the-loop,dst=/projects/workspace",
+          "mcp/filesystem",
+          "/projects"
+        ],
+        "transport": "stdio"
+      },
+      "github-official": {
+        "command": "docker",
+        "args": [
+          "run",
+          "-i",
+          "--rm",
+          "-e",
+          "GITHUB_PERSONAL_ACCESS_TOKEN",
+          "mcp/github-mcp-server"
+        ],
+        "transport": "stdio",
+        "env": {
+          "GITHUB_PERSONAL_ACCESS_TOKEN": "<YOUR_TOKEN>"
+        }
+      }
+    }
+  }
