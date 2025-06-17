@@ -1,0 +1,18 @@
+[project]
+name = "human-in-the-loop"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.13"
+dependencies = [
+    "langchain-core>=0.3.65",
+    "langchain-mcp-adapters>=0.1.7",
+    "langchain-openai>=0.3.23",
+    "langgraph>=0.4.8",
+    "pydantic>=2.11.7",
+]
+
+[dependency-groups]
+dev = [
+    "ipykernel>=6.29.5",
+]
