@@ -28,10 +28,10 @@ class  AgentState(BaseModel):
     """
     messages: Annotated[List[BaseMessage], add_messages] = []
     protected_tools: List[str] = [
-        # "create_directory",
-        # "edit_file",
-        # "move_file",
-        # "write_file"
+        "create_directory",
+        "edit_file",
+        "move_file",
+        "write_file"
     ]
     yolo_mode: bool = False
 
@@ -45,8 +45,8 @@ async def build_graph():
 
     llm = ChatOpenAI(
         model="gpt-4.1-mini-2025-04-14",
-        temperature=0.1
-    ).bind_tools(tools)
+        temperature=0.1,
+    ).bind_tools(tools, parallel_tool_calls=False)
 
     # llm = ChatOllama(
     #     model="qwen3:4b",
@@ -55,13 +55,13 @@ async def build_graph():
 
     def assistant_node(state: AgentState) -> AgentState:
         response = llm.invoke(
-            [SystemMessage(content="You are Goop, a helpful assistant. You have access to the local filesystem but only within the /projects/workspace directory. You must use paths relative to /projects/workspace for all tools.")] +
+            [SystemMessage(content="You are Goop, a helpful assistant. You have access to the local filesystem but only within an approved directory. The approved directory is /projects/workspace and all paths must begin with /projects/workspace/.")] +
             state.messages
             )
         state.messages = state.messages + [response]
         return state
     
-    def human_tool_review_node(state: AgentState) -> Command[Literal["assistant_node", "tools"]]:
+    async def human_tool_review_node(state: AgentState) -> Command[Literal["assistant_node", "tools"]]:
         last_message = state.messages[-1]
 
         # Ensure we have a valid AI message with tool calls
@@ -130,7 +130,7 @@ async def build_graph():
             return Command(goto="tools")
 
 
-    def assistant_router(state: AgentState) -> str:
+    async def assistant_router(state: AgentState) -> str:
         last_message = state.messages[-1]
         if isinstance(last_message, AIMessage) and last_message.tool_calls:
             if not state.yolo_mode:
