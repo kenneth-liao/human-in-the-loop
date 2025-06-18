@@ -6,8 +6,7 @@
           "run",
           "-i",
           "--rm",
-          "--mount", 
-          "type=bind,src=${WORKSPACE},dst=/projects/workspace",
+          "--mount", "type=bind,src=${WORKSPACE},dst=/projects/workspace",
           "mcp/filesystem",
           "/projects"
         ],

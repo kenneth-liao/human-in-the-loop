@@ -1,4 +1,4 @@
-from goop.graph import build_graph, AgentState
+from goop.graph import build_graph
 from langchain_core.messages import AIMessageChunk, HumanMessage, ToolCallChunk
 from typing import AsyncGenerator, Any
 from langgraph.graph.state import CompiledStateGraph
@@ -71,6 +71,7 @@ async def main():
     try:
         graph = await build_graph()
 
+        # Checkpointing and a thread_id are required for human-in-the-loop in Langgraph
         config = RunnableConfig(
             recursion_limit=25,
             configurable = {
@@ -78,8 +79,10 @@ async def main():
             }
         )
         
+        # YOLO mode will always skip human review for protected tools.
         yolo_mode = False
 
+        # Initial input
         graph_input = {
             "messages": [
                 HumanMessage(content="Briefly introduce yourself and offer to help me.")
@@ -88,15 +91,17 @@ async def main():
         }
 
         while True:
+            # Run the graph until it interrupts
             print(f" ---- 🤖 Goop ---- \n")
             async for response in stream_graph_responses(graph_input, graph, config=config):
                 print(Fore.CYAN + response + Style.RESET_ALL, end="", flush=True)
 
-            # Get the thread state after the intial run
+            # Get the thread state after the run
             thread_state = graph.get_state(config=config)
 
             # Check if there are any interrupts
             while thread_state.interrupts:
+                
                 # if interrupt, collect input and handle resume
                 for interrupt in thread_state.interrupts:
                     print("\n ----- ✅ / ❌ Human Approval Required ----- \n")
