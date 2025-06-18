@@ -5,9 +5,11 @@ from langgraph.graph.state import CompiledStateGraph
 from langgraph.types import Command
 import json
 from langchain_core.runnables.config import RunnableConfig
+from colorama import Fore, Back, Style
 
 
 async def process_tool_call_chunk(chunk: ToolCallChunk):
+    """Process a tool call chunk and return a formatted string."""
     tool_call_str = ""
 
     tool_name = chunk.get("name", "")
@@ -70,7 +72,7 @@ async def main():
         graph = await build_graph()
 
         config = RunnableConfig(
-            recursion_limit=15,
+            recursion_limit=25,
             configurable = {
                 "thread_id": "1"
             }
@@ -86,33 +88,41 @@ async def main():
         }
 
         while True:
-            print(f" ---- 🤖 Ralph ---- \n")
+            print(f" ---- 🤖 Goop ---- \n")
             async for response in stream_graph_responses(graph_input, graph, config=config):
-                print(response, end="", flush=True)
+                print(Fore.CYAN + response + Style.RESET_ALL, end="", flush=True)
 
+            # Get the thread state after the intial run
             thread_state = graph.get_state(config=config)
 
+            # Check if there are any interrupts
             while thread_state.interrupts:
                 # if interrupt, collect input and handle resume
                 for interrupt in thread_state.interrupts:
                     print("\n ----- ✅ / ❌ Human Approval Required ----- \n")
-                    interrupt_json_str = json.dumps(interrupt.value, indent=2, ensure_ascii=False)
-                    print(interrupt_json_str)
-                    print("\n Please specify whether you want to continue, update, or provide feedback.")
+                    interrupt_json_str = json.dumps(interrupt.value, indent=2, ensure_ascii=False, default=str)
+                    print(Fore.YELLOW + interrupt_json_str + Style.RESET_ALL)
+                    print("\n Please specify whether you want to reject, continue, update, or provide feedback.")
 
-                    action = input("Action (continue, update, feedback): ")
-                    while action not in ["continue", "update", "feedback"]:
-                        print("Invalid action. Please try again.")
-                        action = input("Action (continue, update, feedback): ")
+                    action = ""
+                    data = None
+                    # Validate the action is one the allowed options
+                    while action not in ["reject", "continue", "update", "feedback", "exit"]:
+                        if action == "exit":
+                            print("\n\nExit command received. Exiting...\n\n")
+                            return
+                        
+                        print("\nInvalid action. Please try again.\n")
+                        action = input("Action (reject, continue, update, feedback): ")
 
-                    if action == "continue":
-                        data=None
-                    else:
+                    # If additional data is required, collect it
+                    if action in ["update", "feedback"]:
                         data = input("Data: ")
 
+                    # Resume the graph with the human input
                     print(f" ----- 🤖 Assistant ----- \n")
                     async for response in stream_graph_responses(Command(resume={"action": action, "data": data}), graph, config=config):
-                        print(response, end="", flush=True)
+                        print(Fore.CYAN + response + Style.RESET_ALL, end="", flush=True)
 
                     thread_state = graph.get_state(config=config)
 

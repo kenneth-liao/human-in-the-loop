@@ -47,433 +47,97 @@ config = {"configurable": {"thread_id": "unique_thread_id"}}
 
 ## Implementation Patterns
 
-Try these examples yourself! I've tested all of these implementations so you can simply copy and paste them into a Python file and run them, just make sure you've installed the correct dependencies.
+The following patterns demonstrate common human-in-the-loop scenarios. For complete, runnable code implementations of these patterns, please refer to the `graph.py` file in this repository.
 
 ### Pattern 1: Basic Human Review and Edit
 
-```python
-from typing import TypedDict
-import uuid
-from langgraph.constants import START, END
-from langgraph.graph import StateGraph
-from langgraph.types import interrupt, Command
-from langgraph.checkpoint.memory import MemorySaver
-from langchain_core.runnables.config import RunnableConfig
+This pattern demonstrates the simplest form of human-in-the-loop: generating content, pausing for human review and editing, then continuing with the edited content.
 
+**Flow:**
 
-class State(TypedDict):
-    summary: str
+1. AI generates initial content (e.g., a summary)
+2. Execution pauses with an interrupt, presenting the content to the human
+3. Human reviews and optionally edits the content
+4. Execution resumes with the human-edited content
+5. Downstream processing uses the final content
 
-def generate_summary(state: State) -> State:
-    return {"summary": "The cat sat on the mat and looked at the stars."}
+**Key Components:**
 
-def human_review_edit(state: State) -> State:
-    result = interrupt({
-        "task": "Please review and edit the generated summary if necessary.",
-        "generated_summary": state["summary"]
-    })
-    return {"summary": result["edited_summary"]}
+- Simple state with content field
+- Generation node that creates initial content
+- Human review node using `interrupt()` to pause execution
+- Downstream processing node that uses the final content
 
-def downstream_use(state: State) -> State:
-    print(f"✅ Using edited summary: {state['summary']}")
-    return state
-
-# Build the graph
-builder = StateGraph(State)
-builder.add_node("generate_summary", generate_summary)
-builder.add_node("human_review_edit", human_review_edit)
-builder.add_node("downstream_use", downstream_use)
-
-builder.set_entry_point("generate_summary")
-builder.add_edge("generate_summary", "human_review_edit")
-builder.add_edge("human_review_edit", "downstream_use")
-builder.add_edge("downstream_use", END)
-
-checkpointer = MemorySaver()
-graph = builder.compile(checkpointer=checkpointer)
-
-# Execute until interrupt
-config = RunnableConfig(configurable={"thread_id": str(uuid.uuid4())})
-result = graph.invoke({}, config=config)
-
-# Resume with human input
-edited_summary = "The cat lay on the rug, gazing peacefully at the night sky."
-final_result = graph.invoke(
-    Command(resume={"edited_summary": edited_summary}),
-    config=config
-)
-
-print(final_result)
-```
+**Use Cases:** Content generation, document drafting, summary creation, any scenario where human oversight improves quality.
 
 ### Pattern 2: Human Approval/Rejection with Routing
 
-```python
-from typing import TypedDict, Literal
-import uuid
-from langgraph.constants import START, END
-from langgraph.graph import StateGraph
-from langgraph.types import interrupt, Command
-from langgraph.checkpoint.memory import MemorySaver
-from langchain_core.runnables.config import RunnableConfig
+This pattern implements a binary decision point where humans can approve or reject AI-generated content, with different execution paths based on the decision.
 
+**Flow:**
 
-class State(TypedDict):
-    llm_output: str
-    decision: str
-    final_result: str
+1. AI generates potentially sensitive or important content
+2. Execution pauses for human approval/rejection decision
+3. Based on human decision, execution routes to either:
+   - Approved path: Uses the original AI content
+   - Rejected path: Uses a safe fallback response
 
-def generate_output(state: State) -> State:
-    return {"llm_output": "This is a potentially sensitive AI-generated response about financial advice."}
+**Key Components:**
 
-def human_approval(state: State) -> Command[Literal["approved_path", "rejected_path"]]:
-    decision = interrupt({
-        "question": "Do you approve the following output?",
-        "llm_output": state["llm_output"]
-    })
+- State tracking the generated content, decision, and final result
+- Generation node that creates potentially sensitive content
+- Human approval node using `Command` with `goto` for routing
+- Separate approval and rejection paths with different outcomes
 
-    if decision == "approve":
-        return Command(goto="approved_path", update={"decision": "approved"})
-    else:
-        return Command(goto="rejected_path", update={"decision": "rejected"})
-
-def approved_path(state: State) -> State:
-    print("✅ Output approved! Proceeding with original response.")
-    return {"final_result": f"APPROVED: {state['llm_output']}"}
-
-def rejected_path(state: State) -> State:
-    print("❌ Output rejected! Using safe fallback response.")
-    return {"final_result": "I cannot provide that type of advice. Please consult a professional."}
-
-# Build the graph
-builder = StateGraph(State)
-builder.add_node("generate_output", generate_output)
-builder.add_node("human_approval", human_approval)
-builder.add_node("approved_path", approved_path)
-builder.add_node("rejected_path", rejected_path)
-
-builder.set_entry_point("generate_output")
-builder.add_edge("generate_output", "human_approval")
-builder.add_edge("approved_path", END)
-builder.add_edge("rejected_path", END)
-
-checkpointer = MemorySaver()
-graph = builder.compile(checkpointer=checkpointer)
-
-# Execute until interrupt
-config = RunnableConfig(configurable={"thread_id": str(uuid.uuid4())})
-result = graph.invoke({}, config=config)
-
-# Resume with human decision
-human_decision = "reject"  # Change to "approve" to test the other path
-final_result = graph.invoke(
-    Command(resume=human_decision),
-    config=config
-)
-
-print(final_result)
-```
+**Use Cases:** Content moderation, sensitive operations requiring approval, quality gates, compliance checks.
 
 ### Pattern 3: Tool Call Review and Modification
 
-```python
-from typing import TypedDict, Literal, Dict, Any
-import uuid
-from langgraph.constants import START, END
-from langgraph.graph import StateGraph
-from langgraph.types import interrupt, Command
-from langgraph.checkpoint.memory import MemorySaver
-from langchain_core.runnables.config import RunnableConfig
+This pattern demonstrates human oversight of AI tool calls, allowing humans to review, modify, or provide feedback before tools are executed.
 
+**Flow:**
 
-class State(TypedDict):
-    pending_tool_call: Dict[str, Any]
-    tool_result: str
-    messages: list
+1. AI generates a tool call with specific parameters
+2. Execution pauses for human review of the proposed tool call
+3. Human can choose to:
+   - Continue: Execute the tool call as-is
+   - Update: Modify the tool call parameters and execute
+   - Feedback: Send feedback to the AI for regeneration
+4. Based on the choice, execution either runs the tool or regenerates
 
-def generate_tool_call(state: State) -> State:
-    # Simulate an LLM generating a tool call
-    tool_call = {
-        "name": "send_email",
-        "args": {
-            "to": "boss@company.com",
-            "subject": "Urgent: System Down",
-            "body": "The entire system is down and we need immediate action!"
-        }
-    }
-    return {"pending_tool_call": tool_call}
+**Key Components:**
 
-def human_review_node(state: State) -> Command[Literal["call_llm", "run_tool"]]:
-    human_review = interrupt({
-        "question": "Is this tool call correct?",
-        "tool_call": state["pending_tool_call"]
-    })
+- State tracking pending tool calls, results, and messages
+- Tool call generation node that creates proposed actions
+- Human review node with multiple routing options using `Command`
+- Tool execution node that performs the actual action
+- LLM feedback node that regenerates based on human input
 
-    review_action = human_review.get("action", "continue")
-    review_data = human_review.get("data")
-
-    if review_action == "continue":
-        return Command(goto="run_tool")
-    elif review_action == "update":
-        # Update the tool call with human modifications
-        updated_tool_call = {
-            "name": state["pending_tool_call"]["name"],
-            "args": review_data
-        }
-        return Command(goto="run_tool", update={"pending_tool_call": updated_tool_call})
-    elif review_action == "feedback":
-        # Send feedback back to LLM for regeneration
-        return Command(goto="call_llm", update={"messages": [f"Human feedback: {review_data}"]})
-    else:
-        return Command(goto="run_tool")
-
-def run_tool(state: State) -> State:
-    tool_call = state["pending_tool_call"]
-    print(f"🔧 Executing tool: {tool_call['name']}")
-    print(f"   Args: {tool_call['args']}")
-    return {"tool_result": f"Tool {tool_call['name']} executed successfully"}
-
-def call_llm(state: State) -> State:
-    print("🤖 LLM processing feedback and regenerating...")
-    # Simulate LLM regenerating based on feedback
-    new_tool_call = {
-        "name": "send_email",
-        "args": {
-            "to": "team@company.com",
-            "subject": "System Status Update",
-            "body": "We're experiencing some technical difficulties and are working on a solution."
-        }
-    }
-    return {"pending_tool_call": new_tool_call}
-
-# Build the graph
-builder = StateGraph(State)
-builder.add_node("generate_tool_call", generate_tool_call)
-builder.add_node("human_review_node", human_review_node)
-builder.add_node("run_tool", run_tool)
-builder.add_node("call_llm", call_llm)
-
-builder.set_entry_point("generate_tool_call")
-builder.add_edge("generate_tool_call", "human_review_node")
-builder.add_edge("run_tool", END)
-builder.add_edge("call_llm", "human_review_node")
-
-checkpointer = MemorySaver()
-graph = builder.compile(checkpointer=checkpointer)
-
-# Execute until interrupt
-config = RunnableConfig(configurable={"thread_id": str(uuid.uuid4())})
-result = graph.invoke({}, config=config)
-
-# Resume with human decision
-human_decision = {
-    "action": "update",
-    "data": {
-        "to": "team@company.com",
-        "subject": "System Maintenance",
-        "body": "We are performing scheduled maintenance. Service will resume shortly."
-    }
-}
-final_result = graph.invoke(
-    Command(resume=human_decision),
-    config=config
-)
-
-print(final_result)
-```
+**Use Cases:** API calls requiring approval, email sending, file operations, database modifications, any automated action with potential consequences.
 
 ### Pattern 4: Input Validation with Retry Loop
 
-```python
-from typing import TypedDict
-import uuid
-from langgraph.constants import START, END
-from langgraph.graph import StateGraph
-from langgraph.types import interrupt, Command
-from langgraph.checkpoint.memory import MemorySaver
-from langchain_core.runnables.config import RunnableConfig
+This pattern implements robust input validation with automatic retry loops, ensuring valid data is collected before proceeding.
 
+**Flow:**
 
-class State(TypedDict):
-    age: int
-    prompt: str
-    attempts: int
+1. System prompts for user input with validation requirements
+2. User provides input through an interrupt
+3. System validates the input:
+   - If valid: Proceed to processing
+   - If invalid: Update error message and loop back for retry
+4. Continue looping until valid input is received
+5. Process the validated input
 
-def get_valid_age(state: State) -> State:
-    prompt = state.get("prompt", "Please enter your age (must be a non-negative integer).")
-    attempts = state.get("attempts", 0)
+**Key Components:**
 
-    user_input = interrupt({
-        "prompt": prompt,
-        "attempts": attempts
-    })
+- State tracking input value, prompt messages, and attempt counts
+- Input collection node using `interrupt()` with validation logic
+- Conditional routing function that determines retry vs. proceed
+- Processing node that handles the validated input
+- Error handling with informative feedback messages
 
-    try:
-        age = int(user_input)
-        if age < 0:
-            raise ValueError("Age must be non-negative.")
-
-        print(f"✅ Valid age received: {age}")
-        return {"age": age, "attempts": attempts + 1}
-
-    except (ValueError, TypeError):
-        new_prompt = f"'{user_input}' is not valid. Please enter a non-negative integer for age."
-        print(f"❌ Invalid input: {user_input}")
-
-        # Continue the loop by updating state and going back to the same node
-        return {
-            "prompt": new_prompt,
-            "attempts": attempts + 1,
-            "age": -1  # Invalid marker
-        }
-
-def check_age_validity(state: State) -> str:
-    if state.get("age", -1) >= 0:
-        return "process_age"
-    else:
-        return "get_valid_age"
-
-def process_age(state: State) -> State:
-    age = state["age"]
-    if age < 18:
-        category = "minor"
-    elif age < 65:
-        category = "adult"
-    else:
-        category = "senior"
-
-    print(f"🎯 Processing age {age} - Category: {category}")
-    return {"age_category": category}
-
-# Build the graph
-builder = StateGraph(State)
-builder.add_node("get_valid_age", get_valid_age)
-builder.add_node("process_age", process_age)
-
-builder.set_entry_point("get_valid_age")
-builder.add_conditional_edges("get_valid_age", check_age_validity, ["get_valid_age", "process_age"])
-builder.add_edge("process_age", END)
-
-checkpointer = MemorySaver()
-graph = builder.compile(checkpointer=checkpointer)
-
-# Execute with validation loop
-config = RunnableConfig(configurable={"thread_id": str(uuid.uuid4())})
-
-# First attempt with invalid input
-result = graph.invoke({}, config=config)
-result = graph.invoke(Command(resume="not a number"), config=config)
-
-# Second attempt with negative number
-result = graph.invoke(Command(resume="-5"), config=config)
-
-# Third attempt with valid input
-final_result = graph.invoke(Command(resume="25"), config=config)
-
-print(final_result)
-```
-
-### Pattern 5: Tool Wrapper for Automatic HITL
-
-```python
-from typing import TypedDict, Callable, Any
-import uuid
-from langchain_core.tools import BaseTool, tool as create_tool
-from langgraph.types import interrupt, Command
-from langgraph.constants import START, END
-from langgraph.graph import StateGraph
-from langgraph.checkpoint.memory import MemorySaver
-from langchain_core.runnables.config import RunnableConfig
-
-
-class State(TypedDict):
-    messages: list
-    tool_result: str
-
-# Define a sample tool to wrap
-@create_tool
-def book_hotel(location: str, checkin: str, nights: int) -> str:
-    """Book a hotel reservation."""
-    return f"Hotel booked in {location} for {nights} nights starting {checkin}"
-
-@create_tool
-def send_email(to: str, subject: str, body: str) -> str:
-    """Send an email."""
-    return f"Email sent to {to} with subject '{subject}'"
-
-def add_human_in_the_loop(tool: Callable | BaseTool) -> BaseTool:
-    """Wrap a tool to support human-in-the-loop review."""
-    if not isinstance(tool, BaseTool):
-        tool = create_tool(tool)
-
-    @create_tool(tool.name, description=tool.description, args_schema=tool.args_schema)
-    def call_tool_with_interrupt(**tool_input):
-        request = {
-            "action_request": {
-                "action": tool.name,
-                "args": tool_input
-            },
-            "description": "Please review the tool call"
-        }
-
-        response = interrupt(request)
-
-        if response["type"] == "accept":
-            return tool.invoke(tool_input)
-        elif response["type"] == "edit":
-            tool_input = response["args"]
-            return tool.invoke(tool_input)
-        elif response["type"] == "response":
-            return response["args"]
-        else:
-            raise ValueError(f"Unsupported response type: {response['type']}")
-
-    return call_tool_with_interrupt
-
-def call_tool_node(state: State) -> State:
-    # Simulate calling a wrapped tool
-    wrapped_tool = add_human_in_the_loop(book_hotel)
-
-    # This will trigger the interrupt for human review
-    result = wrapped_tool.invoke({
-        "location": "Paris",
-        "checkin": "2024-07-01",
-        "nights": 3
-    })
-
-    return {"tool_result": result}
-
-# Build the graph
-builder = StateGraph(State)
-builder.add_node("call_tool_node", call_tool_node)
-
-builder.set_entry_point("call_tool_node")
-builder.add_edge("call_tool_node", END)
-
-checkpointer = MemorySaver()
-graph = builder.compile(checkpointer=checkpointer)
-
-# Execute until interrupt
-config = RunnableConfig(configurable={"thread_id": str(uuid.uuid4())})
-result = graph.invoke({}, config=config)
-
-# Resume with human decision
-human_decision = {
-    "type": "edit",
-    "args": {
-        "location": "London",  # Human changed the location
-        "checkin": "2024-07-15",  # Human changed the date
-        "nights": 2  # Human changed the duration
-    }
-}
-
-final_result = graph.invoke(
-    Command(resume=human_decision),
-    config=config
-)
-
-print(final_result)
-```
+**Use Cases:** Form validation, data entry with constraints, user registration, configuration setup, any scenario requiring validated user input.
 
 ## Checkpointer Options
 
@@ -486,59 +150,9 @@ checkpointer = MemorySaver()
 graph = builder.compile(checkpointer=checkpointer)
 ```
 
-### 2. SQLite (Local Persistence)
+### 2. Postgres/Redis (Production)
 
-```python
-from langgraph.checkpoint.sqlite import SqliteSaver
-
-# Synchronous
-with SqliteSaver.from_conn_string("checkpoints.db") as checkpointer:
-    graph = builder.compile(checkpointer=checkpointer)
-
-# Asynchronous
-from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
-
-async with AsyncSqliteSaver.from_conn_string("checkpoints.db") as checkpointer:
-    graph = builder.compile(checkpointer=checkpointer)
-```
-
-### 3. PostgreSQL (Production)
-
-```python
-from langgraph.checkpoint.postgres import PostgresSaver
-
-DB_URI = "postgresql://user:pass@localhost:5432/db"
-
-# Synchronous
-with PostgresSaver.from_conn_string(DB_URI) as checkpointer:
-    # checkpointer.setup()  # Run once to create tables
-    graph = builder.compile(checkpointer=checkpointer)
-
-# Asynchronous
-from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
-
-async with AsyncPostgresSaver.from_conn_string(DB_URI) as checkpointer:
-    # await checkpointer.setup()  # Run once to create tables
-    graph = builder.compile(checkpointer=checkpointer)
-```
-
-### 4. Redis (Distributed/Cloud)
-
-```python
-from langgraph.checkpoint.redis import RedisSaver
-
-DB_URI = "redis://localhost:6379"
-
-# Synchronous
-with RedisSaver.from_conn_string(DB_URI) as checkpointer:
-    graph = builder.compile(checkpointer=checkpointer)
-
-# Asynchronous
-from langgraph.checkpoint.redis.aio import AsyncRedisSaver
-
-async with AsyncRedisSaver.from_conn_string(DB_URI) as checkpointer:
-    graph = builder.compile(checkpointer=checkpointer)
-```
+If using the Langgraph Server API with Postgres/Redis, checkpointing is automatically handled.
 
 ## Execution and Resumption
 
@@ -656,38 +270,6 @@ config_with_checkpoint = {
     }
 }
 graph.invoke(None, config=config_with_checkpoint)
-```
-
-## Functional API Pattern
-
-```python
-from langgraph.func import entrypoint, task
-from langgraph.checkpoint.memory import MemorySaver
-
-@task
-def step_1(input_query):
-    return f"{input_query} processed"
-
-@task
-def human_feedback(input_query):
-    feedback = interrupt(f"Please provide feedback: {input_query}")
-    return f"{input_query} {feedback}"
-
-@task
-def step_3(input_query):
-    return f"{input_query} finalized"
-
-@entrypoint(checkpointer=MemorySaver())
-def workflow(input_query):
-    result_1 = step_1(input_query).result()
-    result_2 = human_feedback(result_1).result()
-    result_3 = step_3(result_2).result()
-    return result_3
-
-# Usage
-config = {"configurable": {"thread_id": "1"}}
-for event in workflow.stream("initial input", config):
-    print(event)
 ```
 
 ## Cloud/Production Deployment
