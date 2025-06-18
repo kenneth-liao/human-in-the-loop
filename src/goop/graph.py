@@ -1,6 +1,7 @@
 from pydantic import BaseModel
 from typing import Annotated, List, Literal
 from langchain_openai import ChatOpenAI
+from langchain_ollama import ChatOllama
 from langchain_core.messages import (
     BaseMessage,
     SystemMessage,
@@ -22,9 +23,16 @@ class  AgentState(BaseModel):
     
     Attributes:
         messages: The list of messages in the conversation.
+        protected_tools: The list of tools that require human review.
+        yolo_mode: Whether to skip human review for protected tools.
     """
     messages: Annotated[List[BaseMessage], add_messages] = []
-    protected_tools: List[str] = []
+    protected_tools: List[str] = [
+        # "create_directory",
+        # "edit_file",
+        # "move_file",
+        # "write_file"
+    ]
     yolo_mode: bool = False
 
 
@@ -40,9 +48,14 @@ async def build_graph():
         temperature=0.1
     ).bind_tools(tools)
 
+    # llm = ChatOllama(
+    #     model="qwen3:4b",
+    #     temperature=0.1
+    # ).bind_tools(tools)
+
     def assistant_node(state: AgentState) -> AgentState:
         response = llm.invoke(
-            [SystemMessage(content="You're a good person")] +
+            [SystemMessage(content="You are Goop, a helpful assistant. You have access to the local filesystem but only within the /projects/workspace directory. You must use paths relative to /projects/workspace for all tools.")] +
             state.messages
             )
         state.messages = state.messages + [response]
@@ -57,18 +70,23 @@ async def build_graph():
 
         tool_call = last_message.tool_calls[-1]
 
+        # Stop graph execution at this node and wait for human input
+        # The interrupt value can be of any type
         human_review: dict = interrupt({
             "message": "Your input is required for the following tool:",
             "tool_call": tool_call
         })
 
-        review_action = human_review["action"]
+        # The type of the interrupt value is defined by the interrupt() call but the value passed back to the graph
+        # when resuming must match the structure defined here.
+        review_action = human_review.get("action")
         review_data = human_review.get("data")
 
+        # Approve the tool call as-is
         if review_action == "continue":
             return Command(goto="tools")
 
-        # Change the tool call arguments created by our Agent
+        # Update the tool call arguments created by our Agent, then proceed to call the tool
         elif review_action == "update":
             if review_data is None:
                 raise ValueError("update action requires data")
@@ -86,6 +104,7 @@ async def build_graph():
             return Command(goto="tools", update={"messages": [updated_message]})
 
         # Send feedback to the Agent as a tool message (required after a tool call)
+        # The Agent can then decide whether to retry the tool call or not
         elif review_action == "feedback":
             if review_data is None:
                 raise ValueError("feedback action requires data")
@@ -96,6 +115,16 @@ async def build_graph():
                 tool_call_id=tool_call["id"]
             )
             return Command(goto="assistant_node", update={"messages": [tool_message]})
+        
+        # Reject the tool call and send a message to the Agent
+        elif review_action == "reject":
+            tool_message = ToolMessage(
+                content="The tool call was rejected by the user, follow up with the user to understand why and how they would like to proceed.",
+                name=tool_call["name"],
+                tool_call_id=tool_call["id"]
+            )
+            return Command(goto="assistant_node", update={"messages": [tool_message]})
+        
         else:
             # if nothing is passed, assume continue
             return Command(goto="tools")
