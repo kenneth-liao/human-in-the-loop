@@ -46,7 +46,7 @@ async def build_graph():
     llm = ChatOpenAI(
         model="gpt-4.1-mini-2025-04-14",
         temperature=0.1,
-    ).bind_tools(tools, parallel_tool_calls=False)
+    ).bind_tools(tools, parallel_tool_calls=True)
 
     # llm = ChatOllama(
     #     model="qwen3:4b",
@@ -62,6 +62,11 @@ async def build_graph():
         return state
     
     async def human_tool_review_node(state: AgentState) -> Command[Literal["assistant_node", "tools"]]:
+        # This node is called when the Agent has generated a tool call that requires human review. 
+        # Note that this only works for a single tool call at a time. 
+        # For parallel tool calling, we will need to modify this node to review each tool call individually. 
+        # E.g. a tool queue could be used to store the tool calls and review them one at a time.
+
         last_message = state.messages[-1]
 
         # Ensure we have a valid AI message with tool calls
@@ -135,7 +140,7 @@ async def build_graph():
         if isinstance(last_message, AIMessage) and last_message.tool_calls:
             if not state.yolo_mode:
                 if any(tool_call["name"] in state.protected_tools for tool_call in last_message.tool_calls):
-                    # how do we handle multiple tool calls?
+                    
                     return "human_tool_review_node"
             return "tools"
         else:
@@ -151,6 +156,7 @@ async def build_graph():
     builder.add_conditional_edges("assistant_node", assistant_router, ["tools", "human_tool_review_node", END])
     builder.add_edge("tools", "assistant_node")
 
+    # Checkpointing is required for human-in-the-loop!
     return builder.compile(checkpointer=MemorySaver())
 
 
