@@ -106,19 +106,19 @@ async def main():
                 for interrupt in thread_state.interrupts:
                     print("\n ----- ✅ / ❌ Human Approval Required ----- \n")
                     interrupt_json_str = json.dumps(interrupt.value, indent=2, ensure_ascii=False, default=str)
-                    print(Fore.YELLOW + interrupt_json_str + Style.RESET_ALL)
-                    print("\n Please specify whether you want to reject, continue, update, or provide feedback.")
+                    print(Fore.YELLOW + interrupt_json_str + Style.RESET_ALL, flush=True)
+                    print("\n Please specify whether you want to reject, continue, update, or provide feedback.", flush=True)
 
                     action = ""
                     data = None
                     # Validate the action is one the allowed options
                     while action not in ["reject", "continue", "update", "feedback", "exit"]:
-                        if action == "exit":
-                            print("\n\nExit command received. Exiting...\n\n")
-                            return
-                        
                         print("\nInvalid action. Please try again.\n")
                         action = input("Action (reject, continue, update, feedback): ")
+                    
+                    if action == "exit":
+                            print("\n\nExit command received. Exiting...\n\n")
+                            return
 
                     # If additional data is required, collect it
                     if action in ["update", "feedback"]:
